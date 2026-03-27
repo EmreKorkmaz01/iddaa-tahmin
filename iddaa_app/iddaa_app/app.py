@@ -167,7 +167,22 @@ def parse_iddaa(content: bytes) -> pd.DataFrame:
         records.append(rec)
 
     df = pd.DataFrame(records)
+   if not records:
+        st.error("❌ Dosyadan hiç maç okunamadı. Dosya formatını kontrol edin.")
+        st.stop()
+
+    df = pd.DataFrame(records)
+
+    # Kolon yoksa oluştur
+    for col in ["o1", "ox", "o2"]:
+        if col not in df.columns:
+            df[col] = np.nan
+
     df = df[df["o1"].notna() & df["ox"].notna() & df["o2"].notna()].reset_index(drop=True)
+
+    if len(df) == 0:
+        st.error("❌ Geçerli oran verisi bulunamadı. Dosya formatı farklı olabilir.")
+        st.stop()
     return df
 
 

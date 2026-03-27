@@ -123,13 +123,20 @@ def parse_iddaa(content: bytes) -> pd.DataFrame:
             if not m:
                 continue
             g = [float(x) for x in m.groups()]
-            if key == "iy":   out.update(iy1=g[0], iy0=g[1], iy2=g[2])
-            elif key == "sy": out.update(sy1=g[0], sy0=g[1], sy2=g[2])
-            elif key == "ou15": out.update(ou15u=g[0], ou15o=g[1])
-            elif key == "ou35": out.update(ou35u=g[0], ou35o=g[1])
-            elif key == "tc": out.update(odd_o=g[0], even_o=g[1])
-            elif key == "tg": out.update(tg01=g[0], tg23=g[1])
-            elif key == "dc": out.update(dc_1x=g[0], dc_12=g[1], dc_x2=g[2])
+            if key == "iy":
+                out.update(iy1=g[0], iy0=g[1], iy2=g[2])
+            elif key == "sy":
+                out.update(sy1=g[0], sy0=g[1], sy2=g[2])
+            elif key == "ou15":
+                out.update(ou15u=g[0], ou15o=g[1])
+            elif key == "ou35":
+                out.update(ou35u=g[0], ou35o=g[1])
+            elif key == "tc":
+                out.update(odd_o=g[0], even_o=g[1])
+            elif key == "tg":
+                out.update(tg01=g[0], tg23=g[1])
+            elif key == "dc":
+                out.update(dc_1x=g[0], dc_12=g[1], dc_x2=g[2])
         return out
 
     records = []
@@ -139,17 +146,14 @@ def parse_iddaa(content: bytes) -> pd.DataFrame:
             continue
         if not re.match(r"^\d{2}:\d{2}$", parts[1].strip()):
             continue
-
         score_raw = parts[6].strip() if len(parts) > 6 else ""
         ht_raw    = parts[8].strip() if len(parts) > 8 else ""
         played    = bool(re.match(r"^\d+-\d+$", score_raw))
-
         detail_str = ""
         if i + 1 < len(lines):
             dp = lines[i + 1].strip().split("\t")
             if len(dp) > 1:
                 detail_str = dp[1]
-
         rec = {
             "league":   parts[3].strip() if len(parts) > 3 else "",
             "home":     parts[5].strip() if len(parts) > 5 else "",
@@ -166,14 +170,12 @@ def parse_iddaa(content: bytes) -> pd.DataFrame:
         rec.update(extract_detail(detail_str))
         records.append(rec)
 
-    df = pd.DataFrame(records)
-   if not records:
-        st.error("❌ Dosyadan hiç maç okunamadı. Dosya formatını kontrol edin.")
+    if len(records) == 0:
+        st.error("Dosyadan hiç maç okunamadı. Dosya formatını kontrol edin.")
         st.stop()
 
     df = pd.DataFrame(records)
 
-    # Kolon yoksa oluştur
     for col in ["o1", "ox", "o2"]:
         if col not in df.columns:
             df[col] = np.nan
@@ -181,8 +183,9 @@ def parse_iddaa(content: bytes) -> pd.DataFrame:
     df = df[df["o1"].notna() & df["ox"].notna() & df["o2"].notna()].reset_index(drop=True)
 
     if len(df) == 0:
-        st.error("❌ Geçerli oran verisi bulunamadı. Dosya formatı farklı olabilir.")
+        st.error("Geçerli oran verisi bulunamadı.")
         st.stop()
+
     return df
 
 

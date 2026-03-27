@@ -319,6 +319,15 @@ le     =LabelEncoder(); y_enc=le.fit_transform(y_all)
 imp    =SimpleImputer(strategy="mean")
 X_imp  =pd.DataFrame(imp.fit_transform(X_all),columns=FEATURES)
 
+# Lig bazlı feature ekle
+league_counts = played_df['league'].value_counts()
+played_df['league_encoded'] = played_df['league'].map(
+    lambda x: x if league_counts.get(x, 0) >= 50 else 'OTHER'
+)
+le_lig = LabelEncoder()
+lig_feature = le_lig.fit_transform(played_df['league_encoded'])
+X_imp['league_code'] = lig_feature
+
 prog   =st.progress(0,text="Eğitiliyor...")
 res,oof,best=train_models(X_imp,y_enc,le,selected_models,cv_folds,prog)
 prog.empty()

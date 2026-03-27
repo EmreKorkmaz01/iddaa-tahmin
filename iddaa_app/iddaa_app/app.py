@@ -549,21 +549,70 @@ with t4:
         lay(fig,"Top 20 Feature Importance",h=500,xa=dict(title="Önem Skoru"))
         st.plotly_chart(fig,use_container_width=True)
 
-    st.divider(); st.subheader("Lig Bazlı Performans")
+  st.divider(); st.subheader("Lig Bazlı Performans")
+
     lgr=[]
     for lg in played_df["league"].unique():
         mk=played_df["league"]==lg
         if mk.sum()<3: continue
         sy=y_all.values[mk.values]; sp=best_preds[mk.values]
-        lgr.append({"Lig":lg,"Maç":int(mk.sum()),"Doğruluk%":round((sy==sp).mean()*100,1)})
+        lgr.append({
+            "Lig":      lg,
+            "Maç":      int(mk.sum()),
+            "Doğru":    int((sy==sp).sum()),
+            "Doğruluk%":round((sy==sp).mean()*100,1),
+            "Ev%":      round((sy=="1").mean()*100,1),
+            "Ber%":     round((sy=="X").mean()*100,1),
+            "Dep%":     round((sy=="2").mean()*100,1),
+        })
+
     if lgr:
-        lgdf=pd.DataFrame(lgr).sort_values("Doğruluk%",ascending=True)
-        fig=go.Figure(go.Bar(y=lgdf["Lig"],x=lgdf["Doğruluk%"],orientation="h",
-                             marker_color=[bc(a) for a in lgdf["Doğruluk%"]],
-                             text=lgdf.apply(lambda r:f"{r['Doğruluk%']}% ({r['Maç']} maç)",axis=1),textposition="outside"))
-        fig.add_vline(x=55,line_dash="dash",line_color="gray")
-        lay(fig,"Lig Bazlı Doğruluk (≥3 maç)",h=max(300,len(lgdf)*25),xa=dict(range=[0,110]))
-        st.plotly_chart(fig,use_container_width=True)
+        lgdf = pd.DataFrame(lgr).sort_values("Doğruluk%", ascending=False)
+
+        # Filtre
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            min_mac = st.slider("Min Maç Sayısı", 3, 50, 10, key="lg_min")
+        with col_f2:
+            sort_by = st.selectbox("Sıralama", ["Doğruluk% ↓","Maç ↓","Lig A-Z"], key="lg_sort")
+
+        lgdf = lgdf[lgdf["Maç"] >= min_mac]
+        if sort_by == "Maç ↓":       lgdf = lgdf.sort_values("Maç", ascending=False)
+        elif sort_by == "Lig A-Z":   lgdf = lgdf.sort_values("Lig")
+        else:                         lgdf = lgdf.sort_values("Doğruluk%", ascending=False)
+
+        # Özet metrikler
+        m1,m2,m3,m4 = st.columns(4)
+        m1.metric("Toplam Lig", len(lgdf))
+        m2.metric("Başarılı Lig (≥60%)", (lgdf["Doğruluk%"]>=60).sum())
+        m3.metric("Orta (50-60%)",        ((lgdf["Doğruluk%"]>=50)&(lgdf["Doğruluk%"]<60)).sum())
+        m4.metric("Zayıf (<50%)",          (lgdf["Doğruluk%"]<50).sum())
+
+        # Yatay bar grafik
+        fig = go.Figure(go.Bar(
+            y=lgdf["Lig"],
+            x=lgdf["Doğruluk%"],
+            orientation="h",
+            marker_color=[bc(a) for a in lgdf["Doğruluk%"]],
+            text=lgdf.apply(lambda r: f"{r['Doğruluk%']}% ({r['Maç']} maç)", axis=1),
+            textposition="outside",
+        ))
+        fig.add_vline(x=55, line_dash="dash", line_color="gray", annotation_text="55%")
+        fig.add_vline(x=50, line_dash="dot",  line_color="rgba(255,255,255,0.2)")
+        lay(fig, "Lig Bazlı Model Doğruluğu",
+            h=max(400, len(lgdf)*22),
+            xa=dict(range=[0, 110], title="Doğruluk %"))
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Detay tablo
+        st.markdown("#### Detay Tablo")
+        st.dataframe(
+            lgdf.style.background_gradient(
+                subset=["Doğruluk%"], cmap="RdYlGn", vmin=30, vmax=75
+            ),
+            use_container_width=True,
+            height=400
+        )
 
     # Lig encoding özeti
     st.divider(); st.subheader("Lig Encoding Özeti")

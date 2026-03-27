@@ -46,8 +46,10 @@ with st.sidebar:
         ["Logistic Regression","Random Forest","XGBoost","LightGBM","Gradient Boosting"],
         default=["Random Forest","XGBoost"],
     )
-    cv_folds = st.slider("CV Katlama", 3, 10, 3)
-    conf_thr = st.slider("Güven Eşiği (%)", 50, 75, 60)
+    cv_folds   = st.slider("CV Katlama", 3, 10, 3)
+    conf_thr   = st.slider("Güven Eşiği (%)", 50, 75, 60)
+    min_league = st.slider("Lig Min Maç (Encoding)", 10, 100, 30,
+                           help="Bu sayıdan az maçı olan ligler 'OTHER' grubuna alınır")
     st.divider()
     st.subheader("🔍 Filtreler")
     filter_league = st.text_input("Lig", placeholder="ör: TÜR S")
@@ -226,7 +228,7 @@ def build_features(df):
     d["over25"]     =(d["total_goals"]>2.5).astype(float)
     return d
 
-FEATURES=[
+BASE_FEATURES=[
     "p1","px","p2","fav_prob","second_prob","fav_gap",
     "home_away_ratio","draw_pull","entropy",
     "log_o1","log_ox","log_o2","o1_o2_spread","min_odds","margin",
@@ -269,11 +271,24 @@ def train_models(X,y_enc,le,selected,cv_folds,prog):
     best=max(results,key=lambda k:results[k]["acc"])
     return results,oof_preds,best
 
-def predict_up(up_df,imputer,results,selected,le):
-    Xi=pd.DataFrame(imputer.transform(up_df[FEATURES].reindex(columns=FEATURES)),columns=FEATURES)
-    w={n:results[n]["acc"] for n in selected if results[n]["model"]}
+def predict_up(up_df, imp, results, selected, le, le_lig, league_counts, min_league, feature_cols):
+    # Lig encoding — eğitimle aynı mantık
+    up_encoded = up_df['league'].map(
+        lambda x: x if league_counts.get(x, 0) >= min_league else 'OTHER'
+    )
+    up_encoded = up_encoded.map(
+        lambda x: x if x in le_lig.classes_ else 'OTHER'
+    )
+    up_lig = le_lig.transform(up_encoded)
+
+    X_up = up_df[BASE_FEATURES].reindex(columns=BASE_FEATURES).copy()
+    X_up['league_code'] = up_lig
+    X_up = X_up[feature_cols]  # Eğitimdekiyle aynı kolon sırası
+    Xi = pd.DataFrame(imp.transform(X_up), columns=feature_cols)
+
+    w={n:results[n]["acc"] for n in selected if results[n]["model"] is not None}
     p=sum(w[n]*results[n]["model"].predict_proba(Xi) for n in w)/sum(w.values())
-    return p,le.inverse_transform(p.argmax(axis=1)),p.max(axis=1)
+    return p, le.inverse_transform(p.argmax(axis=1)), p.max(axis=1)
 
 # ── PLOTLY YARDIMCI ───────────────────────────
 BG=dict(paper_bgcolor="#0f1117",plot_bgcolor="#1a1d26",font=dict(color="#e2e8f0",size=12),margin=dict(t=50,b=40,l=40,r=20))
@@ -295,7 +310,9 @@ if uploaded is None:
     **Desteklenen formatlar:**
     - Eski format (tarih sütunu başta)
     - Yeni format (saat sütunu başta)
-    - Her ikisi de otomatik algılanır, her hafta aynı şekilde çalışır.
+    - Her ikisi de otomatik algılanır.
+    
+    **Yeni özellik:** Lig bazlı encoding — model her ligin dinamiğini ayrı öğrenir.
     """)
     st.stop()
 
@@ -303,8 +320,8 @@ with st.spinner("Veri okunuyor..."):
     df_raw = parse_iddaa(uploaded.read())
     df     = build_features(df_raw)
 
-played_df  =df[df["played"]&df["result"].notna()].reset_index(drop=True)
-upcoming_df=df[~df["played"]].reset_index(drop=True)
+played_df  = df[df["played"]&df["result"].notna()].reset_index(drop=True)
+upcoming_df= df[~df["played"]].reset_index(drop=True)
 
 if len(played_df)<10:
     st.error(f"Yeterli oynanan maç yok ({len(played_df)}). Daha büyük dosya yükleyin.")
@@ -313,40 +330,56 @@ if not selected_models:
     st.warning("Sol panelden en az 1 model seçin.")
     st.stop()
 
-X_all  =played_df[FEATURES].reindex(columns=FEATURES)
-y_all  =played_df["result"]
-le     =LabelEncoder(); y_enc=le.fit_transform(y_all)
-imp    =SimpleImputer(strategy="mean")
-X_imp  =pd.DataFrame(imp.fit_transform(X_all),columns=FEATURES)
+# ── Lig Encoding ──────────────────────────────
+league_counts = played_df['league'].value_counts().to_dict()
 
-# Lig bazlı feature ekle
-league_counts = played_df['league'].value_counts()
 played_df['league_encoded'] = played_df['league'].map(
-    lambda x: x if league_counts.get(x, 0) >= 50 else 'OTHER'
+    lambda x: x if league_counts.get(x, 0) >= min_league else 'OTHER'
 )
 le_lig = LabelEncoder()
 lig_feature = le_lig.fit_transform(played_df['league_encoded'])
-X_imp['league_code'] = lig_feature
 
-prog   =st.progress(0,text="Eğitiliyor...")
-res,oof,best=train_models(X_imp,y_enc,le,selected_models,cv_folds,prog)
+# ── Feature Matrix ────────────────────────────
+X_base = played_df[BASE_FEATURES].reindex(columns=BASE_FEATURES).copy()
+X_base['league_code'] = lig_feature
+FEATURES = BASE_FEATURES + ['league_code']
+
+y_all  = played_df["result"]
+le     = LabelEncoder()
+y_enc  = le.fit_transform(y_all)
+imp    = SimpleImputer(strategy="mean")
+X_imp  = pd.DataFrame(imp.fit_transform(X_base), columns=FEATURES)
+
+# ── Eğitim ───────────────────────────────────
+prog  = st.progress(0, text="Eğitiliyor...")
+res, oof, best = train_models(X_imp, y_enc, le, selected_models, cv_folds, prog)
 prog.empty()
 
-probs_up=preds_up=tops_up=None
-if len(upcoming_df)>0:
-    probs_up,preds_up,tops_up=predict_up(upcoming_df,imp,res,selected_models,le)
+# ── Upcoming Tahminleri ───────────────────────
+probs_up = preds_up = tops_up = None
+if len(upcoming_df) > 0:
+    try:
+        probs_up, preds_up, tops_up = predict_up(
+            upcoming_df, imp, res, selected_models, le,
+            le_lig, league_counts, min_league, FEATURES
+        )
+    except Exception as e:
+        st.warning(f"Tahmin sırasında hata: {e}")
 
-best_oof  =oof[best]; best_preds=le.inverse_transform(best_oof.argmax(axis=1)); best_conf=best_oof.max(axis=1)
+best_oof   = oof[best]
+best_preds = le.inverse_transform(best_oof.argmax(axis=1))
+best_conf  = best_oof.max(axis=1)
 
 # ── SEKMELER ──────────────────────────────────
-t1,t2,t3,t4=st.tabs(["📊 Dashboard","⚽ Tahminler","✅ Geçmiş Maçlar","🔬 Model Analizi"])
+t1,t2,t3,t4 = st.tabs(["📊 Dashboard","⚽ Tahminler","✅ Geçmiş Maçlar","🔬 Model Analizi"])
 
 # ── TAB 1 ─────────────────────────────────────
 with t1:
     st.markdown(f"### 📂 {uploaded.name} — {len(df)} maç")
-    acc   =accuracy_score(y_all,best_preds)
-    n_hi  =int((best_conf>=conf_thr/100).sum())
-    avg_m =(played_df["margin"].mean()-1)*100
+    acc   = accuracy_score(y_all, best_preds)
+    n_hi  = int((best_conf >= conf_thr/100).sum())
+    avg_m = (played_df["margin"].mean()-1)*100
+    n_leagues = played_df['league'].nunique()
 
     cols=st.columns(6)
     for col,(val,lbl,note,cls) in zip(cols,[
@@ -355,18 +388,18 @@ with t1:
         (n_hi,f"Güven ≥{conf_thr}%",f"{len(upcoming_df)} bekliyor","green"),
         (f"{avg_m:.1f}%","Bookmaker Marjı","Ort. aşım","amber"),
         (f"{(y_all=='1').mean()*100:.0f}%","Ev Sahibi %",f"{(y_all=='1').sum()} maç","blue"),
-        (f"{(y_all=='X').mean()*100:.0f}%","Beraberlik %",f"{(y_all=='X').sum()} maç","amber"),
+        (n_leagues,"Lig Sayısı",f"≥{min_league} maç encoding","amber"),
     ]):
         with col:
             st.markdown(f'<div class="mc"><div class="ml">{lbl}</div><div class="mv {cls}">{val}</div><div class="mn">{note}</div></div>',unsafe_allow_html=True)
 
     st.divider()
-    cl,cr=st.columns(2)
+    cl,cr = st.columns(2)
 
     with cl:
-        rc=y_all.value_counts()
-        fig=go.Figure(go.Pie(labels=rc.index.tolist(),values=rc.values.tolist(),
-                             marker_colors=[C["c1"],C["cx"],C["c2"]],hole=0.42,textinfo="label+percent+value"))
+        rc = y_all.value_counts()
+        fig = go.Figure(go.Pie(labels=rc.index.tolist(),values=rc.values.tolist(),
+                               marker_colors=[C["c1"],C["cx"],C["c2"]],hole=0.42,textinfo="label+percent+value"))
         lay(fig,"Sonuç Dağılımı",h=320); st.plotly_chart(fig,use_container_width=True)
 
     with cr:
@@ -401,7 +434,7 @@ with t1:
 # ── TAB 2 ─────────────────────────────────────
 with t2:
     if probs_up is None:
-        st.info("Oynanmamış maç bulunmuyor.")
+        st.info("Oynanmamış maç bulunmuyor veya tahmin hesaplanamadı.")
     else:
         cls_list=list(le.classes_); rows=[]
         for i in range(len(upcoming_df)):
@@ -409,7 +442,7 @@ with t2:
             pred=preds_up[i]; top=tops_up[i]
             cl_lbl="🟢 Yüksek" if top>=conf_thr/100 else ("🟡 Orta" if top>=0.50 else "🔴 Düşük")
             ou="-"
-            if "p_over25" in row and pd.notna(row.get("p_over25")):
+            if "p_over25" in row.index and pd.notna(row.get("p_over25")):
                 ou="Üstü" if row["p_over25"]>0.5 else "Altı"
             rows.append({
                 "Lig":row["league"],"Ev Sahibi":row["home"],"Deplasman":row["away"],
@@ -462,7 +495,7 @@ with t3:
     with hf2: hf=st.selectbox("Sonuç",["Tümü","✅ Doğru","❌ Yanlış"],key="h_hit")
     with hf3: pf=st.selectbox("Tahmin",["Tümü","1","X","2"],key="h_p")
 
-    if lf:       hdf=hdf[hdf["Lig"].str.contains(lf,case=False,na=False)]
+    if lf:         hdf=hdf[hdf["Lig"].str.contains(lf,case=False,na=False)]
     if hf!="Tümü": hdf=hdf[hdf["Sonuç"]==hf]
     if pf!="Tümü": hdf=hdf[hdf["Tahmin"]==pf]
 
@@ -531,3 +564,14 @@ with t4:
         fig.add_vline(x=55,line_dash="dash",line_color="gray")
         lay(fig,"Lig Bazlı Doğruluk (≥3 maç)",h=max(300,len(lgdf)*25),xa=dict(range=[0,110]))
         st.plotly_chart(fig,use_container_width=True)
+
+    # Lig encoding özeti
+    st.divider(); st.subheader("Lig Encoding Özeti")
+    enc_df = pd.DataFrame({
+        "Lig": list(league_counts.keys()),
+        "Maç Sayısı": list(league_counts.values())
+    }).sort_values("Maç Sayısı", ascending=False)
+    enc_df["Encoding"] = enc_df["Maç Sayısı"].apply(
+        lambda x: "✅ Ayrı Grup" if x >= min_league else "⚪ OTHER"
+    )
+    st.dataframe(enc_df.head(50), use_container_width=True, height=400)
